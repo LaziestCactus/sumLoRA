@@ -1,4 +1,7 @@
+*pycache*
+clem
 *.pkl
+*model*
 results
 mathLora-model
 medLora-model

@@ -1,0 +1,1 @@
+Make a virtual environment and install ipykernel and jupyter
