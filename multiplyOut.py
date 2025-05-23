@@ -6,7 +6,7 @@ import numpy as np
 lora_weights = {}
 
 # To reload the LoRA weights for a model:
-with open("med_lora_weights.pkl", "rb") as f:
+with open("finance_lora_weights.pkl", "rb") as f:
     lora_weights = pickle.load(f)
     
     

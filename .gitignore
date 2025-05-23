@@ -2,7 +2,7 @@
 clem
 *.pkl
 *model*
-results
+*results*
 mathLora-model
 medLora-model
 .vscode

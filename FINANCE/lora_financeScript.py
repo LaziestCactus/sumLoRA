@@ -5,155 +5,165 @@ from transformers import (
     TrainingArguments,
     Trainer
 )
-import pickle
-from peft import get_peft_model, LoraConfig, TaskType
+from peft import get_peft_model, LoraConfig, TaskType, PeftModel
 import torch
 from torch.utils.data import Dataset, DataLoader
-from torch.amp import autocast
 from datasets import load_dataset
-import matplotlib as plt
+import pickle
 import os
 
-# ─── Config ─────────────────────────────────────────────────────────────────────
-tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
-max_length = 128
-batch_size = 8
+# ─── HYPERPARAMETERS ─────────────────────────────────────────────────────────────
+LoRA_Rank    = 4
+LoRA_Alpha   = 64
+LoRA_Dropout = 0.1
+max_length   = 128
+batch_size   = 8
+num_epochs   = 1
+model_name   = "gpt2"
+device       = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# ─── Load & split finance QA dataset ────────────────────────────────────────────
-financial_dataset = load_dataset("itzme091/financial-qa-10K-modified")
-train_val_split    = financial_dataset["train"].train_test_split(test_size=0.2, seed=42)
-val_test_split     = train_val_split["test"].train_test_split(test_size=0.5, seed=42)
+# ─── LOAD & SPLIT FINANCE QA DATASET ────────────────────────────────────────────
+financial = load_dataset("itzme091/financial-qa-10K-modified")["train"]
+tv_split = financial.train_test_split(test_size=0.2, seed=42)
+vt_split = tv_split["test"].train_test_split(test_size=0.5, seed=42)
 
-train_data      = train_val_split["train"]
-validation_data = val_test_split["train"]
-test_data       = val_test_split["test"]
+train_data      = tv_split["train"]
+validation_data = vt_split["train"]
+test_data       = vt_split["test"]
 
-# ─── Prepare text lists ─────────────────────────────────────────────────────────
-training_question   = list(train_data["question"])
-training_answer     = list(train_data["answer"])
-validation_question = list(validation_data["question"])
-validation_answer   = list(validation_data["answer"])
-test_question       = list(test_data["question"])
-test_answer         = list(test_data["answer"])
+# ─── PREPARE TEXT LISTS ─────────────────────────────────────────────────────────
+train_q = list(train_data["question"])
+train_a = list(train_data["answer"])
+val_q   = list(validation_data["question"])
+val_a   = list(validation_data["answer"])
+test_q  = list(test_data["question"])
+test_a  = list(test_data["answer"])
 
-print("Example train question:", training_question[0])
-print("Example validation question:", validation_question[0])
-print("Example test question:", test_question[0])
-
-# ─── Dataset class ──────────────────────────────────────────────────────────────
-class makeDataset(Dataset):
-    def __init__(self, inputs, targets):
-        self.inputs  = inputs
-        self.targets = targets
-
-    def __len__(self):
-        return len(self.inputs["input_ids"])
-
-    def __getitem__(self, idx):
-        return {
-            "input_ids":      self.inputs["input_ids"][idx],
-            "attention_mask": self.inputs["attention_mask"][idx],
-            "labels":         self.targets["input_ids"][idx],
-        }
-
-# ─── Build LoRA‐wrapped model ───────────────────────────────────────────────────
-test_model = AutoModelForCausalLM.from_pretrained("gpt2")
-lora_config = LoraConfig(
-    task_type      = TaskType.CAUSAL_LM,
-    r              = 4,
-    lora_alpha     = 64,
-    lora_dropout   = 0.1,
-    target_modules = ["c_attn", "c_proj"],
-    modules_to_save= ["lm_head"]
-)
-test_model = get_peft_model(test_model, lora_config)
-
-# ─── Reload LoRA weights ────────────────────────────────────────────────────────
-with open("finance_lora_weights.pkl", "rb") as f:
-    loaded_lora_weights = pickle.load(f)
-
-count = 0
-for name, param in test_model.named_parameters():
-    if name in loaded_lora_weights:
-        count += 1
-        param.requires_grad = True
-        print(f"Loading LoRA weight for: {name}")
-        param.data.copy_(torch.tensor(loaded_lora_weights[name]))
-print(f"Loaded {count} LoRA parameters")
-
-# ─── Move model to device ──────────────────────────────────────────────────────
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-model = test_model.to(device)
-
-# ─── Tokenize all splits ────────────────────────────────────────────────────────
+# ─── TOKENIZER & LoRA‐WRAPPED MODEL SETUP ────────────────────────────────────────
+tokenizer = GPT2Tokenizer.from_pretrained(model_name)
 tokenizer.pad_token = tokenizer.eos_token
 
-tokenized_training_question   = tokenizer(
-    training_question, truncation=True, padding="max_length",
-    max_length=max_length, return_tensors="pt"
+base_model = GPT2LMHeadModel.from_pretrained(model_name)
+lora_config = LoraConfig(
+    task_type      = TaskType.CAUSAL_LM,
+    r              = LoRA_Rank,
+    lora_alpha     = LoRA_Alpha,
+    lora_dropout   = LoRA_Dropout,
+    target_modules = ["c_attn", "c_proj"]
 )
-tokenized_training_answer     = tokenizer(
-    training_answer, truncation=True, padding=True,
-    max_length=max_length, return_tensors="pt"
-)
-tokenized_validation_question = tokenizer(
-    validation_question, truncation=True, padding="max_length",
-    max_length=max_length, return_tensors="pt"
-)
-tokenized_validation_answer   = tokenizer(
-    validation_answer, truncation=True, padding=True,
-    max_length=max_length, return_tensors="pt"
-)
-tokenized_test_question       = tokenizer(
-    test_question, truncation=True, padding="max_length",
-    max_length=max_length, return_tensors="pt"
-)
-tokenized_test_answer         = tokenizer(
-    test_answer, truncation=True, padding=True,
-    max_length=max_length, return_tensors="pt"
+model = get_peft_model(base_model, lora_config).to(device)
+
+# ─── TOKENIZATION HELPER ─────────────────────────────────────────────────────────
+def tokenize(texts):
+    return tokenizer(
+        texts,
+        truncation=True,
+        padding="max_length",
+        max_length=max_length,
+        return_tensors="pt"
+    )
+
+tok_train_q = tokenize(train_q)
+tok_train_a = tokenize(train_a)
+tok_val_q   = tokenize(val_q)
+tok_val_a   = tokenize(val_a)
+tok_test_q  = tokenize(test_q)
+tok_test_a  = tokenize(test_a)
+
+# ─── DATASET CLASS ───────────────────────────────────────────────────────────────
+class FinancialQADataset(Dataset):
+    def __init__(self, enc_q, enc_a):
+        self.enc_q = enc_q
+        self.enc_a = enc_a
+    def __len__(self):
+        return len(self.enc_q["input_ids"])
+    def __getitem__(self, idx):
+        return {
+            "input_ids":      self.enc_q["input_ids"][idx],
+            "attention_mask": self.enc_q["attention_mask"][idx],
+            "labels":         self.enc_a["input_ids"][idx],
+        }
+
+train_ds = FinancialQADataset(tok_train_q, tok_train_a)
+val_ds   = FinancialQADataset(tok_val_q,   tok_val_a)
+test_ds  = FinancialQADataset(tok_test_q,  tok_test_a)
+
+# ─── FINE-TUNE WITH LoRA ─────────────────────────────────────────────────────────
+training_args = TrainingArguments(
+    output_dir                = "./financeresults",
+    num_train_epochs          = num_epochs,
+    per_device_train_batch_size = batch_size,
+    per_device_eval_batch_size  = batch_size,
+    warmup_steps              = 2,
+    weight_decay              = 0.01,
+    logging_dir               = "./financelogs",
+    logging_steps             = 50,
+    evaluation_strategy       = "no"
 )
 
-print("Shapes:")
-print("  Train Q:", tokenized_training_question["input_ids"].shape)
-print("  Val   Q:", tokenized_validation_question["input_ids"].shape)
-print("  Test  Q:", tokenized_test_question["input_ids"].shape)
+trainer = Trainer(
+    model         = model,
+    args          = training_args,
+    train_dataset = train_ds
+)
 
-# ─── Create Dataset objects ─────────────────────────────────────────────────────
-train_dataset = makeDataset(tokenized_training_question, tokenized_training_answer)
-val_dataset   = makeDataset(tokenized_validation_question, tokenized_validation_answer)
-test_dataset  = makeDataset(tokenized_test_question, tokenized_test_answer)
+print("Starting LoRA fine-tuning…")
+trainer.train()
+trainer.save_model("./financeLora-model")
+print("✔️  Model saved to ./financeLora-model")
 
-print("Dataset sizes:")
-print("  Train:", len(train_dataset))
-print("  Val:  ", len(val_dataset))
-print("  Test: ", len(test_dataset))
+# ─── SAVE LoRA WEIGHTS ───────────────────────────────────────────────────────────
+print("Extracting LoRA weights…")
+lora_weights = {}
+count = 0
+for name, param in model.named_parameters():
+    if name.startswith("base_model") and "lora" in name:
+        lora_weights[name] = param.detach().cpu().numpy()
+        count += 1
+print(f"  Collected {count} LoRA tensors")
+with open("finance_lora_weights.pkl", "wb") as f:
+    pickle.dump(lora_weights, f)
 
-# ─── Evaluate LoRA‐augmented model ──────────────────────────────────────────────
+# ─── EVALUATE FINETUNED MODEL ───────────────────────────────────────────────────
+eval_loader = DataLoader(val_ds, batch_size=batch_size)
 model.eval()
-total_loss  = 0.0
-num_batches = 0
-
+total_loss, n_batches = 0.0, 0
 with torch.no_grad():
-    for i in range(0, len(val_dataset), batch_size):
-        if i + batch_size > len(val_dataset):
-            break
-        batch = val_dataset[i : i + batch_size]
-        input_ids      = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        labels         = batch["labels"].to(device)
+    for batch in eval_loader:
+        inputs = batch["input_ids"].to(device)
+        masks  = batch["attention_mask"].to(device)
+        labs   = batch["labels"].to(device)
+        out    = model(input_ids=inputs, attention_mask=masks, labels=labs)
+        total_loss += out.loss.item()
+        n_batches  += 1
 
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels
-        )
-        total_loss  += outputs.loss.item()
-        num_batches += 1
+avg_loss = total_loss / n_batches
+perplexity = torch.exp(torch.tensor(avg_loss)).item()
+print(f"Fine-tuned Loss: {avg_loss:.4f}, Perplexity: {perplexity:.4f}")
 
-average_loss = total_loss / num_batches
-perplexity   = torch.exp(torch.tensor(average_loss)).item()
+# ─── RELOAD & RE-EVALUATE LoRA WEIGHTS ───────────────────────────────────────────
+print("Reloading LoRA weights…")
+reload_base = AutoModelForCausalLM.from_pretrained(model_name)
+reload_model = get_peft_model(reload_base, lora_config).to(device)
 
-print(f"Average Loss: {average_loss:.4f}")
-print(f"Perplexity:   {perplexity:.4f}")
+with open("finance_lora_weights.pkl", "rb") as f:
+    loaded = pickle.load(f)
+for name, param in reload_model.named_parameters():
+    if name in loaded:
+        param.data.copy_(torch.tensor(loaded[name], device=device))
+
+reload_model.eval()
+total_loss, n_batches = 0.0, 0
+with torch.no_grad():
+    for batch in eval_loader:
+        inputs = batch["input_ids"].to(device)
+        masks  = batch["attention_mask"].to(device)
+        labs   = batch["labels"].to(device)
+        out    = reload_model(input_ids=inputs, attention_mask=masks, labels=labs)
+        total_loss += out.loss.item()
+        n_batches  += 1
+
+avg_loss2 = total_loss / n_batches
+perplexity2 = torch.exp(torch.tensor(avg_loss2)).item()
+print(f"Reloaded Loss: {avg_loss2:.4f}, Perplexity: {perplexity2:.4f}")
 
