@@ -60,7 +60,7 @@ class makeDataset(Dataset):
 
 
 #HYPERPARAMS:
-LoRA_Rank = 4
+LoRA_Rank = 4 
 LoRA_Alpha = 64
 LoRA_Dropout = 0.1
 max_length = 64 #longest token taken
@@ -217,11 +217,7 @@ for name, param in model.named_parameters():
 print(f"The number of modified parameter is {count}.")
 
 # Save the LoRA weights to a file
-with open("math_lora_weights.pkl", "wb") as f:
+with open("temp.pkl", "wb") as f:
     pickle.dump(lora_weights, f)
 
-print("LoRA weights extracted and saved to lora_weights.pkl")
-
-
-
-
+print("LoRA weights extracted and saved to temp.pkl")

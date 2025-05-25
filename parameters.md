@@ -3,6 +3,10 @@ Best is trial 2 with value: 1.421231985092163.
 Best hyperparameters: {'LoRA_Rank': 16, 'LoRA_Alpha': 32, 'LoRA_Dropout': 0.25, 'batch_size': 4, 'num_epochs': 2}
 Best validation loss: 1.421231985092163
 
+Medicine:
+'num_epochs': 1}. Best is trial 3 with value: 5.909060001373291.  Best trial: Loss: 5.9091 Params: LoRA_Rank: 16 LoRA_Alpha: 64 LoRA_Dropout: 0.3 batch_size: 8 num_epochs: 2
+
+
 Finance/Medicine
 Best hyperparameters: {'LoRA_Rank': 16, 'LoRA_Alpha': 64, 'LoRA_Dropout': 0.15000000000000002, 'batch_size': 16, 'num_epochs': 1}
 Best validation loss: 4.741185188293457 

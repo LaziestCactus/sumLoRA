@@ -13,7 +13,7 @@ import pickle
 import os
 
 # ─── HYPERPARAMETERS ─────────────────────────────────────────────────────────────
-LoRA_Rank    = 16
+LoRA_Rank    = 4
 LoRA_Alpha   = 64
 LoRA_Dropout = 0.3
 max_length   = 64
@@ -151,36 +151,7 @@ for name, param in lora_model.named_parameters():
         count += 1
 print(f"Extracted {count} LoRA parameters")
 
-with open("med_lora_weights.pkl", "wb") as f:
+with open("temp.pkl", "wb") as f:
     pickle.dump(lora_weights, f)
-print("LoRA weights saved to med_lora_weights.pkl")
-
-# ─── RELOAD LoRA WEIGHTS & RE-EVALUATE ─────────────────────────────────────────
-print("Reloading LoRA weights and re-evaluating…")
-test_model = AutoModelForCausalLM.from_pretrained(model_name)
-test_model = get_peft_model(test_model, lora_config).to(device)
-
-with open("med_lora_weights.pkl", "rb") as f:
-    loaded = pickle.load(f)
-for name, param in test_model.named_parameters():
-    if name in loaded:
-        param.data.copy_(torch.tensor(loaded[name], device=device))
-        param.requires_grad = True
-
-test_model.eval()
-total_loss, n_batches = 0.0, 0
-with torch.no_grad():
-    for i in range(0, len(val_dataset), batch_size):
-        if i + batch_size > len(val_dataset): break
-        batch = val_dataset[i : i+batch_size]
-        inputs  = batch["input_ids"].to(device)
-        masks   = batch["attention_mask"].to(device)
-        labels  = batch["labels"].to(device)
-        out     = test_model(input_ids=inputs, attention_mask=masks, labels=labels)
-        total_loss += out.loss.item()
-        n_batches  += 1
-
-avg_loss2   = total_loss / n_batches
-perplexity2 = torch.exp(torch.tensor(avg_loss2)).item()
-print(f"After reload → Loss: {avg_loss2:.4f}, Perplexity: {perplexity2:.4f}")
+print("LoRA weights saved to temp.pkl")
 

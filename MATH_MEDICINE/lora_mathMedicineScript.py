@@ -5,7 +5,7 @@ from datasets import load_dataset
 from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
 # ── CONFIG ───────────────────────────────────────────────────────────────────
-DELTA_FILE = "finance_lora_weights.pkl"
+DELTA_FILE = "mathAndMed_lora_weights.pkl"
 MODEL_NAME = "gpt2"
 BATCH_SIZE = 8
 MAX_LENGTH = 128
@@ -35,14 +35,22 @@ for name, param in model.named_parameters():
     applied += 1
 print(f"\n✅ Applied deltas to {applied} parameters\n")
 
-# ── 3. Load and preprocess financial dataset ─────────────────────────────────
-financial_dataset = load_dataset("itzme091/financial-qa-10K-modified")
-train_val_split = financial_dataset["train"].train_test_split(test_size=0.2, seed=42)
-val_test_split  = train_val_split["test"].train_test_split(test_size=0.5, seed=42)
+# ── 3. Load and preprocess combined Math + Med dataset ────────────────────────
+math_ds = load_dataset("math_qa.py")["train"]
+med_ds  = load_dataset("keivalya/MedQuad-MedicalQnADataset")["train"]
 
-test_data = val_test_split["test"]
-test_qs = test_data["question"]
-test_as = test_data["answer"]
+math = math_ds.map(lambda x: {"question": x["Problem"], "answer": x["Rationale"]})
+med  = med_ds.map(lambda x: {"question": x["Question"], "answer": x["Answer"]})
+
+all_qs = math["question"] + med["question"]
+all_as = math["answer"]   + med["answer"]
+
+total     = len(all_qs)
+train_end = int(0.8 * total)
+val_end   = train_end + int(0.1 * total)
+
+test_qs = all_qs[val_end:]
+test_as = all_as[val_end:]
 
 enc_q = tokenizer(
     test_qs,
@@ -92,7 +100,7 @@ with torch.no_grad():
 avg_loss   = total_loss / batches
 perplexity = torch.exp(torch.tensor(avg_loss)).item()
 
-print("\n📊 Financial QA Test Evaluation")
+print("\n📊 Math + Med Test Evaluation")
 print(f"Average Loss : {avg_loss:.4f}")
 print(f"Perplexity   : {perplexity:.4f}")
 

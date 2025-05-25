@@ -1,4 +1,8 @@
+*.json
+*.log
+*.bin
 *pycache*
+*checkpoint*
 clem
 *.pkl
 *model*

@@ -5,41 +5,38 @@ from torch.utils.data import Dataset
 import optuna
 from datasets import load_dataset
 
-# Load datasets, math, finance, medical
+# Set device (CPU or GPU)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Load datasets
 financial_dataset = load_dataset("itzme091/financial-qa-10K-modified")
 medicine_dataset = load_dataset("keivalya/MedQuad-MedicalQnADataset")
-math_dataset = load_dataset("math_qa.py")
 
+# Access the 'train' split
 financial_train = financial_dataset['train']
 medicine_train = medicine_dataset['train']
-math_train = math_dataset['train']
 
-# Apply the map function to add the 'category' field to each dataset
+# Add 'category' to each dataset
 financial_combined = financial_train.map(lambda x: {
     'question': x['question'],
     'answer': x['answer'],
-    'category': 'financial'  # Add category to differentiate
+    'category': 'financial'
 })
 
 medicine_combined = medicine_train.map(lambda x: {
     'question': x['Question'],
     'answer': x['Answer'],
-    'category': 'medicine'  # Add category to differentiate
+    'category': 'medicine'
 })
 
-math_combined = math_train.map(lambda x: {
-    'question': x['Problem'],  # Rename 'Problem' to 'question'
-    'answer': x['Rationale'],  # Rename 'Rationale' to 'answer'
-    'category': 'math',  # Add category to differentiate
-})
-
-def combine_data(financial_data, math_data, medicine_data):
-    questions = financial_data["question"] + math_data["question"] + medicine_data["question"]
-    answers = financial_data["answer"] + math_data["answer"] + medicine_data["answer"]
-    categories = financial_data["category"] + math_data["category"] + medicine_data["category"]
+# Combine datasets
+def combine_data(financial_data, medical_data):
+    questions = financial_data["question"] + medical_data["question"]
+    answers = financial_data["answer"] + medical_data["answer"]
+    categories = financial_data["category"] + medical_data["category"]
     return questions, answers, categories
 
-questions, answers, categories = combine_data(financial_combined, math_combined, medicine_combined)
+questions, answers, categories = combine_data(financial_combined, medicine_combined)
 
 # Custom Dataset Class
 class makeDataset(Dataset):

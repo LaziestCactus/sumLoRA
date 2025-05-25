@@ -22,7 +22,7 @@ train_data      = ds['train']
 validation_data = ds['validation']
 test_data       = ds['test']
 
-# Combine corresponding elements of "Problem" and "options"
+# Combine corresponding elements of "Problem" and"options"
 training_question   = [p + " " + o for p, o in zip(train_data[:]["Problem"],      train_data[:]["options"])]
 training_answer     = list(train_data[:]['Rationale'])
 validation_question = [p + " " + o for p, o in zip(validation_data[:]["Problem"], validation_data[:]["options"])]
@@ -57,7 +57,7 @@ class makeDataset(Dataset):
 test_model = AutoModelForCausalLM.from_pretrained("gpt2")
 lora_config = LoraConfig(
     task_type=TaskType.CAUSAL_LM,
-    r=8,
+    r=4,
     lora_alpha=32,
     lora_dropout=0.1,
     target_modules=["c_attn", "c_proj"]
@@ -65,7 +65,7 @@ lora_config = LoraConfig(
 test_model = get_peft_model(test_model, lora_config)
 
 # To reload the LoRA weights for a model:
-with open("math_lora_weights.pkl", "rb") as f:
+with open("temp.pkl", "rb") as f:
     loaded_lora_weights = pickle.load(f)
 count = 0
 for name, param in test_model.named_parameters():
@@ -137,5 +137,4 @@ average_loss = total_loss / num_batches
 perplexity   = torch.exp(torch.tensor(average_loss)).item()
 
 print(f"Average Loss: {average_loss:.4f}")
-print(f"Perplexity:   {perplexity:.4f}")
-
+print(f"Perplexity:   {perplexity:.4f}") 

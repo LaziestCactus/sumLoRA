@@ -2,9 +2,9 @@ import pickle
 combined = {} #sum loraA and loraB before hand
 
 # Load the two sets of LoRA weights from different files
-with open("../medicine_lora_weights.pkl", "rb") as f:
+with open("../MEDICINE/med_lora_weights.pkl", "rb") as f:
     med_lora_weights = pickle.load(f)
-with open("../math_lora_weights.pkl", "rb") as f:
+with open("../MATH/math_lora_weights.pkl", "rb") as f:
     math_lora_weights = pickle.load(f)
 
 # Combine the med_lora_weights and math_lora_weights into a single dictionary

@@ -7,8 +7,8 @@ import pickle
 import os
 
 # ─── HYPERPARAMETERS ─────────────────────────────────────────────────────────────
-LoRA_Rank    = 16
-LoRA_Alpha   = 32
+LoRA_Rank    = 4 
+LoRA_Alpha   = 64
 LoRA_Dropout = 0.25
 max_length   = 128   # longest tokenized sequence
 batch_size   = 4
@@ -141,6 +141,6 @@ for name, param in lora_model.named_parameters():
         lora_weights[name] = param.detach().cpu().numpy()
         count += 1
 
-pickle.dump(lora_weights, open("finance_lora_weights.pkl", "wb"))
-print(f"Saved {count} LoRA parameter arrays to finance_lora_weights.pkl")
+pickle.dump(lora_weights, open("temp.pkl", "wb"))
+print(f"Saved {count} LoRA parameter arrays to temp.pkl")
 

@@ -1,48 +1,43 @@
 import pickle
 import torch
-import numpy as np
 
-# Initialize a dictionary to store LoRA weights
-lora_weights = {}
+# ── CONFIG ───────────────────────────────────────────────────────────────────
+LORA_PKL     = "temp.pkl"
+OUTPUT_PKL   = "finance_lora_weights.pkl"
+LORA_ALPHA   = 64  # must match training config
+LORA_RANK    = 8   # must match training config
 
-# To reload the LoRA weights for a model:
-with open("finance_lora_weights.pkl", "rb") as f:
-    lora_weights = pickle.load(f)
-    
-    
-# Updated dictionary after multiplication
-updated_dict = {}
+# ── 1. Load raw LoRA weights ──────────────────────────────────────────────────
+with open(LORA_PKL, "rb") as f:
+    lora_state: dict = pickle.load(f)
 
-# Iterate through the dictionary to find pairs and perform multiplication
-for key, weight_A in lora_weights.items():
-    if 'lora_A.default' in key:
-        # Create the corresponding lora_B key
-        key_B = key.replace('lora_A.default', 'lora_B.default')
-        
-        # Get the matching lora_B weight
-        weight_B = lora_weights.get(key_B)
-        
-        if weight_B is not None:
-            # Perform matrix multiplication between weight_A and weight_B
-            weight_A = torch.tensor(weight_A)
-            weight_B = torch.tensor(weight_B)
-            weight_combined = torch.matmul(weight_B, weight_A)
-            
-            # Remove 'lora_A.default' from the key for the final naming
-            new_key = key.replace('.lora_A.default', '')
-            new_key = new_key.replace('base_model.model.transformer.', '')
-            
-            # Add the new key and combined weight to the updated dictionary
-            updated_dict[new_key] = weight_combined
-            #print(new_key)
+# ── 2. Build combined (scaled B @ A) weights ──────────────────────────────────
+combined = {}
+scaling = LORA_ALPHA / LORA_RANK
 
-# # The updated_dict now contains the multiplied matrices with the standard GPT-2 keys
-# # Print the key and the shape of the combined weights for the first few entries
-# for i, (key, value) in enumerate(updated_dict.items()):
-#     print(f"Key: {key}")
-#     print(f"Shape: {value.shape}")
-#     if i == 2:  # Stop after printing the first 3 entries
-#         break
+for key_A, weight_A in lora_state.items():
+    if ".lora_A.default" not in key_A:
+        continue
 
-with open('my_map.pkl', 'wb') as f:
-    pickle.dump(updated_dict, f)
+    key_B = key_A.replace(".lora_A.default", ".lora_B.default")
+    weight_B = lora_state.get(key_B)
+    if weight_B is None:
+        continue
+
+    A = torch.tensor(weight_A)
+    B = torch.tensor(weight_B)
+
+    # Apply scaling here
+    delta = (B @ A) * scaling
+
+    base_key = key_A.replace("base_model.model.", "")
+    base_key = base_key.replace(".lora_A.default", "")
+
+    combined[base_key] = delta
+
+# ── 3. Save combined weights ──────────────────────────────────────────────────
+with open(OUTPUT_PKL, "wb") as f:
+    pickle.dump(combined, f)
+
+print(f"✅ Saved {len(combined)} scaled LoRA deltas to '{OUTPUT_PKL}'")
+

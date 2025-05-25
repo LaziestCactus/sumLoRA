@@ -1,83 +1,98 @@
-#THIS DOES NOT WORK BUT IT'S NOT NEEDED
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
-from peft import get_peft_model, LoraConfig, TaskType
-from transformers import TrainingArguments, Trainer
+import pickle
 import torch
 from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
-from torch.amp import autocast
 from datasets import load_dataset
-import matplotlib as plt
-import matplotlib.pyplot as plt
-import os
-import sys
-import pickle
-from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
+# ── CONFIG ───────────────────────────────────────────────────────────────────
+DELTA_FILE = "med_lora_weights.pkl"
+MODEL_NAME = "gpt2"
+BATCH_SIZE = 8
+MAX_LENGTH = 64
+DEVICE     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# ── 1. Load base GPT-2 and tokenizer ─────────────────────────────────────────
+model = GPT2LMHeadModel.from_pretrained(MODEL_NAME).to(DEVICE).eval()
+tokenizer = GPT2Tokenizer.from_pretrained(MODEL_NAME)
+tokenizer.pad_token = tokenizer.eos_token
 
+# ── 2. Load combined LoRA deltas ─────────────────────────────────────────────
+with open(DELTA_FILE, "rb") as f:
+    delta_dict: dict = pickle.load(f)
 
+# ── 3. Apply transposed deltas to model weights ──────────────────────────────
+applied = 0
+for name, param in model.named_parameters():
+    if name not in delta_dict:
+        continue
+    delta = torch.tensor(delta_dict[name], dtype=param.dtype, device=param.device)
+    if delta.shape != param.shape:
+        if delta.T.shape == param.shape:
+            delta = delta.T
+            print(f"⚠️  Transposed delta for '{name}'")
+        else:
+            raise ValueError(
+                f"Shape mismatch for '{name}': model {tuple(param.shape)}, delta {tuple(delta.shape)}"
+            )
+    param.data.add_(delta)
+    applied += 1
+print(f"\n✅ Applied deltas to {applied} parameters\n")
 
+# ── 4. Prepare MedQuad test split ─────────────────────────────────────────────
+ds = load_dataset("keivalya/MedQuad-MedicalQnADataset")
+test_data = ds["train"]  # no separate test split, so use train as proxy
+questions = test_data["Question"]
+answers   = test_data["Answer"]
 
-test_model = AutoModelForCausalLM.from_pretrained("gpt2")  # Make sure this is the correct model (gpt2, not gp3)
-# Configure LoRA
-lora_config = LoraConfig(
-    task_type=TaskType.CAUSAL_LM,
-    r=8,  # Rank of the low-rank adaptation matrices
-    lora_alpha=32,  # LoRA scaling factor
-    lora_dropout=0.1,  # Dropout for LoRA layers
-    target_modules = ["c_attn", "c_proj"]
+enc_q = tokenizer(
+    questions,
+    padding="max_length",
+    truncation=True,
+    max_length=MAX_LENGTH,
+    return_tensors="pt"
 )
-# Prepare model for LoRA tuning
-test_model = get_peft_model(test_model, lora_config)
+enc_a = tokenizer(
+    answers,
+    padding="max_length",
+    truncation=True,
+    max_length=MAX_LENGTH,
+    return_tensors="pt"
+)
 
-# To reload the LoRA weights for a model:
-with open("mathAndMed_lora_weights.pkl", "rb") as f:
-    loaded_lora_weights = pickle.load(f)
-count = 0
-# Apply the LoRA weights to the model
-for name, param in test_model.named_parameters():
-    if name in loaded_lora_weights:
-        count = count + 1
-        param.requires_grad = True
-        print(f"Loading LoRA weight for: {name}")
-        param.data.copy_(torch.tensor(loaded_lora_weights[name]))
-print(count)
+class QADataset(Dataset):
+    def __init__(self, enc_q, enc_a):
+        self.q, self.a = enc_q, enc_a
+    def __len__(self):
+        return self.q["input_ids"].size(0)
+    def __getitem__(self, idx):
+        return {
+            "input_ids":      self.q["input_ids"][idx],
+            "attention_mask": self.q["attention_mask"][idx],
+            "labels":         self.a["input_ids"][idx],
+        }
 
+test_ds = QADataset(enc_q, enc_a)
 
-
-
-
-
-#TESTING MODEL
-model = test_model
-# Evaluate the model
+# ── 5. Evaluate the merged model ──────────────────────────────────────────────
 model.eval()
-total_loss = 0
-num_batches = 0
-batch_size = 8  # Adjust based on your memory constraints
-loss_hist = [] # Storing it, no use for now
+total_loss, batches = 0.0, 0
 with torch.no_grad():
-    for i in range(0, len(val_dataset), batch_size):
-        if(i+batch_size >= len(val_dataset)):
+    for i in range(0, len(test_ds), BATCH_SIZE):
+        if i + BATCH_SIZE > len(test_ds):
             break
-        batch = val_dataset[i:i + batch_size]
-        # Get input_ids and attention_mask from the batch
-        input_ids = batch['input_ids']
-        attention_mask = batch['attention_mask'] if 'attention_mask' in batch else None
+        batch = [test_ds[j] for j in range(i, i + BATCH_SIZE)]
+        ids   = torch.stack([b["input_ids"]      for b in batch]).to(DEVICE)
+        mask  = torch.stack([b["attention_mask"] for b in batch]).to(DEVICE)
+        labs  = torch.stack([b["labels"]         for b in batch]).to(DEVICE)
 
-        # Pass input_ids as labels for loss calculation
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels= batch['labels'])
-        
-        loss = outputs.loss
-        loss_hist.append(loss)
-        total_loss += loss.item()
-        num_batches += 1
+        outputs = model(input_ids=ids, attention_mask=mask, labels=labs)
+        total_loss += outputs.loss.item()
+        batches += 1
 
-# Calculate average loss and perplexity
-average_loss = total_loss / num_batches
-perplexity = torch.exp(torch.tensor(average_loss)).item()
+avg_loss   = total_loss / batches
+perplexity = torch.exp(torch.tensor(avg_loss)).item()
 
-print(f"Average Loss: {average_loss:.4f}")
-print(f"Perplexity: {perplexity:.4f}")
+print("\n📊 MedQuad Test Evaluation")
+print(f"Average Loss : {avg_loss:.4f}")
+print(f"Perplexity   : {perplexity:.4f}")
+
