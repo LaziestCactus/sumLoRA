@@ -12,7 +12,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 LoRA_RANK = 4
 LoRA_ALPHA = 64
 LoRA_DROPOUT = 0.3
-MAX_LENGTH = 128
+MAX_LENGTH = 64
 BATCH_SIZE = 4
 NUM_EPOCHS = 2
 
