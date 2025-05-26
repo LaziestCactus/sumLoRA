@@ -1,8 +1,6 @@
-import os
-import pickle
-
+#!/usr/bin/env python3
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, ConcatDataset
 from transformers import (
     GPT2LMHeadModel,
     GPT2Tokenizer,
@@ -15,17 +13,15 @@ from datasets import load_dataset
 # -------------------
 # Hyperparameters
 # -------------------
-MODEL_NAME    = "gpt2"
-LORA_RANK     = 4
-LORA_ALPHA    = 64
-LORA_DROPOUT  = 0.1
-MAX_LENGTH    = 64
-BATCH_SIZE    = 16
-NUM_EPOCHS    = 1
-
-MATH_WEIGHTS  = "4_math_lora_weights.pkl"   # math‐trained LoRA weights
-OUTPUT_DIR    = "./combined_lora_model"
-DIFF_WEIGHTS  = "lora_difference.pkl"      # where to save the difference
+MODEL_NAME   = "gpt2"
+LORA_RANK    = 4
+LORA_ALPHA   = 64
+LORA_DROPOUT = 0.1
+MAX_LENGTH   = 64
+BATCH_SIZE   = 16
+NUM_EPOCHS   = 1
+OUTPUT_DIR   = "./combined_lora_model"
+SEED         = 42
 
 # -------------------
 # Device
@@ -34,7 +30,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 # -------------------
-# Load base model + LoRA
+# Load base model + LoRA config
 # -------------------
 base_model = GPT2LMHeadModel.from_pretrained(MODEL_NAME)
 lora_cfg = LoraConfig(
@@ -47,104 +43,100 @@ lora_cfg = LoraConfig(
 model = get_peft_model(base_model, lora_cfg).to(device)
 
 # -------------------
-# Inject Math LoRA weights
+# Load and split Finance data (80/10/10)
 # -------------------
-with open(MATH_WEIGHTS, "rb") as f:
-    math_lora = pickle.load(f)
-
-for name, param in model.named_parameters():
-    if name in math_lora:
-        param.data = torch.tensor(math_lora[name], device=param.device)
-
-print("Math LoRA weights loaded")
+fin_full   = load_dataset("itzme091/financial-qa-10K-modified", split="train")
+s1         = fin_full.train_test_split(test_size=0.2, seed=SEED)
+fin_train  = s1["train"]
+s2         = s1["test"].train_test_split(test_size=0.5, seed=SEED)
+fin_val    = s2["train"]
 
 # -------------------
-# Load & combine datasets
+# Load and split Medicine data (0-14999 train, 15000-15999 val)
 # -------------------
-fin_ds  = load_dataset("itzme091/financial-qa-10K-modified")["train"]
-med_ds  = load_dataset("keivalya/MedQuad-MedicalQnADataset")["train"]
-math_ds = load_dataset("math_qa.py")["train"]
-
-fin = fin_ds.map(lambda x: {"question": x["question"], "answer": x["answer"]})
-med = med_ds.map(lambda x: {"question": x["Question"],  "answer": x["Answer"]})
-math = math_ds.map(lambda x: {"question": x["Problem"],   "answer": x["Rationale"]})
-
-questions = fin["question"] + med["question"] + math["question"]
-answers   = fin["answer"]   + med["answer"]   + math["answer"]
+med_full   = load_dataset("keivalya/MedQuad-MedicalQnADataset", split="train")
+med_train  = med_full.select(range(0, 15000))
+med_val    = med_full.select(range(15000, 16000))
 
 # -------------------
-# Tokenization
+# Load Math data (built-in splits)
+# -------------------
+math_ds    = load_dataset("math_qa.py")
+math_train = math_ds["train"]
+math_val   = math_ds.get("validation", math_train.train_test_split(test_size=0.1, seed=SEED)["test"])
+
+# -------------------
+# Tokenizer
 # -------------------
 tokenizer = GPT2Tokenizer.from_pretrained(MODEL_NAME)
 tokenizer.pad_token = tokenizer.eos_token
-
-enc_q = tokenizer(
-    questions,
-    truncation=True,
-    padding="max_length",
-    max_length=MAX_LENGTH,
-    return_tensors="pt"
-)
-enc_a = tokenizer(
-    answers,
-    truncation=True,
-    padding="max_length",
-    max_length=MAX_LENGTH,
-    return_tensors="pt"
-)
 
 # -------------------
 # Dataset class
 # -------------------
 class QADataset(Dataset):
-    def __init__(self, q, a):
-        self.q = q
-        self.a = a
+    def __init__(self, questions, answers):
+        enc_q = tokenizer(
+            list(questions),
+            truncation=True,
+            padding="max_length",
+            max_length=MAX_LENGTH,
+            return_tensors="pt"
+        )
+        enc_a = tokenizer(
+            list(answers),
+            truncation=True,
+            padding="max_length",
+            max_length=MAX_LENGTH,
+            return_tensors="pt"
+        )
+        self.input_ids      = enc_q.input_ids
+        self.attention_mask = enc_q.attention_mask
+        self.labels         = enc_a.input_ids
+
     def __len__(self):
-        return self.q["input_ids"].size(0)
+        return self.input_ids.size(0)
+
     def __getitem__(self, idx):
         return {
-            "input_ids":      self.q["input_ids"][idx],
-            "attention_mask": self.q["attention_mask"][idx],
-            "labels":         self.a["input_ids"][idx],
+            "input_ids":      self.input_ids[idx],
+            "attention_mask": self.attention_mask[idx],
+            "labels":         self.labels[idx],
         }
 
-full_ds = QADataset(enc_q, enc_a)
-
 # -------------------
-# Train/Val/Test split
+# Build train & validation datasets
 # -------------------
-n        = len(full_ds)
-n_train  = int(0.8 * n)
-n_val    = int(0.1 * n)
-n_test   = n - n_train - n_val
+train_ds = ConcatDataset([
+    QADataset(fin_train["question"], fin_train["answer"]),
+    QADataset(med_train["Question"], med_train["Answer"]),
+    QADataset(math_train["Problem"], math_train["Rationale"]),
+])
+val_ds = ConcatDataset([
+    QADataset(fin_val["question"], fin_val["answer"]),
+    QADataset(med_val["Question"], med_val["Answer"]),
+    QADataset(math_val["Problem"], math_val["Rationale"]),
+])
 
-train_ds, val_ds, test_ds = torch.utils.data.random_split(
-    full_ds,
-    [n_train, n_val, n_test],
-    generator=torch.Generator().manual_seed(42)
-)
-
-print(f"Sizes -> train: {len(train_ds)}  val: {len(val_ds)}  test: {len(test_ds)}")
+print(f"Train size: {len(train_ds)}, Val size: {len(val_ds)}")
 
 # -------------------
 # Training arguments
 # -------------------
 training_args = TrainingArguments(
     output_dir=OUTPUT_DIR,
+    num_train_epochs=NUM_EPOCHS,
     per_device_train_batch_size=BATCH_SIZE,
     per_device_eval_batch_size=BATCH_SIZE,
-    num_train_epochs=NUM_EPOCHS,
-    warmup_steps=2,
-    weight_decay=0.01,
-    logging_dir="./logs",
+    evaluation_strategy="epoch",
+    save_strategy="epoch",
+    save_total_limit=2,
+    load_best_model_at_end=True,
     logging_steps=50,
-    evaluation_strategy="no",
-    save_strategy="no",
 )
 
 # -------------------
-# Trainer
+# Trainer & training
 # -------------------
 trainer = Trainer(
     model=model,
@@ -153,33 +145,8 @@ trainer = Trainer(
     eval_dataset=val_ds,
 )
 
-# -------------------
-# Fine-tune
-# -------------------
+print("▶️  Starting LoRA training on Finance, Medicine, and Math…")
 trainer.train()
-model.save_pretrained(OUTPUT_DIR)
-print("Fine-tuning complete")
-
-# -------------------
-# Extract final LoRA weights
-# -------------------
-final_lora = {}
-for name, param in model.named_parameters():
-    if "lora" in name:
-        final_lora[name] = param.detach().cpu().numpy()
-
-print(f"Extracted {len(final_lora)} LoRA params")
-
-# -------------------
-# Compute & save difference
-# -------------------
-lora_diff = {}
-for name, math_w in math_lora.items():
-    if name in final_lora:
-        lora_diff[name] = final_lora[name] - math_w
-
-with open(DIFF_WEIGHTS, "wb") as f:
-    pickle.dump(lora_diff, f)
-
-print(f"LoRA difference saved to {DIFF_WEIGHTS}")
+trainer.save_model(OUTPUT_DIR)
+print(f"✔️  LoRA model saved to {OUTPUT_DIR}")
 

@@ -1,38 +1,32 @@
-from transformers import GPT2LMHeadModel, GPT2Tokenizer, Trainer, TrainingArguments
-from peft import get_peft_model, LoraConfig, TaskType
 import torch
+from transformers import GPT2LMHeadModel, GPT2Tokenizer, Trainer, TrainingArguments
+from datasets import load_dataset
 from torch.utils.data import Dataset
 import optuna
-from datasets import load_dataset
 
-# Load datasets, math, finance, medical
-financial_dataset = load_dataset("itzme091/financial-qa-10K-modified")
-medicine_dataset = load_dataset("keivalya/MedQuad-MedicalQnADataset")
-math_dataset = load_dataset("math_qa.py")
+# ─── Load Datasets ─────────────────────────────────────────────────────
+financial_train = load_dataset("itzme091/financial-qa-10K-modified")['train']
+medicine_train = load_dataset("keivalya/MedQuad-MedicalQnADataset")['train']
+math_train = load_dataset("math_qa.py")['train']
 
-financial_train = financial_dataset['train']
-medicine_train = medicine_dataset['train']
-math_train = math_dataset['train']
-
-# Apply the map function to add the 'category' field to each dataset
+# ─── Format Datasets ────────────────────────────────────────────────────
 financial_combined = financial_train.map(lambda x: {
     'question': x['question'],
     'answer': x['answer'],
-    'category': 'financial'  # Add category to differentiate
+    'category': 'financial'
 })
-
 medicine_combined = medicine_train.map(lambda x: {
     'question': x['Question'],
     'answer': x['Answer'],
-    'category': 'medicine'  # Add category to differentiate
+    'category': 'medicine'
 })
-
 math_combined = math_train.map(lambda x: {
-    'question': x['Problem'],  # Rename 'Problem' to 'question'
-    'answer': x['Rationale'],  # Rename 'Rationale' to 'answer'
-    'category': 'math',  # Add category to differentiate
+    'question': x['Problem'],
+    'answer': x['Rationale'],
+    'category': 'math'
 })
 
+# ─── Combine Datasets ───────────────────────────────────────────────────
 def combine_data(financial_data, math_data, medicine_data):
     questions = financial_data["question"] + math_data["question"] + medicine_data["question"]
     answers = financial_data["answer"] + math_data["answer"] + medicine_data["answer"]
@@ -41,7 +35,17 @@ def combine_data(financial_data, math_data, medicine_data):
 
 questions, answers, categories = combine_data(financial_combined, math_combined, medicine_combined)
 
-# Custom Dataset Class
+# ─── Tokenizer & Device ────────────────────────────────────────────────
+tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+tokenizer.pad_token = tokenizer.eos_token  # GPT2 doesn't have pad_token
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# ─── Tokenize ──────────────────────────────────────────────────────────
+inputs = tokenizer(questions, padding=True, truncation=True, max_length=128, return_tensors="pt")
+targets = tokenizer(answers, padding=True, truncation=True, max_length=128, return_tensors="pt")
+
+# ─── Dataset Class ─────────────────────────────────────────────────────
 class makeDataset(Dataset):
     def __init__(self, inputs, targets):
         self.inputs = inputs
@@ -57,67 +61,39 @@ class makeDataset(Dataset):
             'labels': self.targets['input_ids'][idx]
         }
 
-# Load model and tokenizer
-model_name = "gpt2"
-GPTmodel = GPT2LMHeadModel.from_pretrained(model_name).to(device)
-GPTmodel.gradient_checkpointing_enable()  # Reduce memory consumption
-tokenizer = GPT2Tokenizer.from_pretrained(model_name)
-
-# Tokenize dataset
-tokenizer.pad_token = tokenizer.eos_token
-tokenized_questions = tokenizer(questions, truncation=True, padding='max_length', max_length=128, return_tensors="np")
-tokenized_answers = tokenizer(answers, truncation=True, padding='max_length', max_length=128, return_tensors="np")
-
-# Create dataset
-full_dataset = makeDataset(tokenized_questions, tokenized_answers)
-
-# Split dataset
-train_size = int(0.8 * len(full_dataset))
-val_size = int(0.1 * len(full_dataset))
-test_size = len(full_dataset) - train_size - val_size
-
-train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(full_dataset, [train_size, val_size, test_size])
-
-# Objective function for Optuna
+# ─── Objective Function for Optuna ─────────────────────────────────────
 def objective(trial):
-    torch.cuda.empty_cache()  # Clear memory cache
+    batch_size = trial.suggest_categorical("batch_size", [8, 16])
+    num_epochs = trial.suggest_int("num_epochs", 1, 3)
 
-    # Hyperparameters to tune
-    LoRA_Rank = trial.suggest_categorical('LoRA_Rank', [4, 8, 16])
-    LoRA_Alpha = trial.suggest_categorical('LoRA_Alpha', [16, 32, 64])
-    LoRA_Dropout = trial.suggest_float('LoRA_Dropout', 0.1, 0.3, step=0.05)
-    batch_size = trial.suggest_categorical('batch_size', [4, 8, 16])
-    num_epochs = trial.suggest_int('num_epochs', 1, 3)
-
-    # Configure LoRA
-    lora_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=LoRA_Rank,
-        lora_alpha=LoRA_Alpha,
-        lora_dropout=LoRA_Dropout,
-        target_modules=["c_attn", "c_proj"],
-        modules_to_save=["lm_head"]
+    # Split data manually for demo purposes (e.g., 90% train / 10% val)
+    split_idx = int(0.9 * len(inputs['input_ids']))
+    train_dataset = makeDataset(
+        {k: v[:split_idx] for k, v in inputs.items()},
+        {k: v[:split_idx] for k, v in targets.items()}
+    )
+    val_dataset = makeDataset(
+        {k: v[split_idx:] for k, v in inputs.items()},
+        {k: v[split_idx:] for k, v in targets.items()}
     )
 
-    # Prepare model with LoRA
-    model = get_peft_model(GPT2LMHeadModel.from_pretrained(model_name), lora_config).to(device)
+    model = GPT2LMHeadModel.from_pretrained("gpt2").to(device)
+    model.resize_token_embeddings(len(tokenizer))  # pad_token added
 
-    # Training arguments
     training_args = TrainingArguments(
-    output_dir=f'./results_trial_{trial.number}',
-    num_train_epochs=num_epochs,
-    per_device_train_batch_size=batch_size,
-    per_device_eval_batch_size=batch_size,
-    warmup_steps=2,
-    weight_decay=0.01,
-    logging_dir='./logs',
-    logging_steps=50,
-    evaluation_strategy="epoch",
-    save_strategy="epoch",  # Save at the end of each epoch
-    save_total_limit=2  # Keep the latest 2 checkpoints to save space
-    )   
+        output_dir=f'./results_trial_{trial.number}',
+        num_train_epochs=num_epochs,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
+        warmup_steps=2,
+        weight_decay=0.01,
+        logging_dir='./logs',
+        logging_steps=50,
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        save_total_limit=2
+    )
 
-    # Trainer setup
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -125,17 +101,14 @@ def objective(trial):
         eval_dataset=val_dataset,
     )
 
-    # Train the model
     trainer.train()
-
-    # Evaluate the model
     eval_results = trainer.evaluate()
-
     return eval_results['eval_loss']
 
-# Optuna Study
+# ─── Run Optuna ────────────────────────────────────────────────────────
 study = optuna.create_study(direction='minimize')
 study.optimize(objective, n_trials=10)
 
 print("Best hyperparameters:", study.best_trial.params)
 print("Best validation loss:", study.best_value)
+
