@@ -43,12 +43,6 @@ This produces plots showing the principal directions and subspace overlaps.
 
 ---
 
-## Composing LoRA Adapters
-
-(Coming soon or add your script here.)
-
----
-
 ## Citation
 
 If you use this project, please cite:
@@ -57,4 +51,3 @@ If you use this project, please cite:
 Cao, Z. (2025). Efficient Modular Learning through Naive LoRA Summation.
 arXiv:2508.11985.
 ```
-
