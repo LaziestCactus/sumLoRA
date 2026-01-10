@@ -1,0 +1,6 @@
+transformers
+peft
+torch
+datasets
+matplotlib
+tensorboard>=2.0
