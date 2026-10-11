@@ -11,3 +11,8 @@ mathLora-model
 medLora-model
 .vscode
 modified_gpt2_lora
+
+# editor / OS junk
+*.sw?
+.DS_Store
+__MACOSX/

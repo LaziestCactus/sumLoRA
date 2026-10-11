@@ -1,53 +1,49 @@
-# sumLoRA: Modular Domain Adaptation with LoRA
+# sumLoRA
 
-This project investigates whether LoRA adapters trained on different domains can be **combined or separated without retraining**.  
-The core idea is that LoRA weight updates from independent datasets often lie in **approximately orthogonal subspaces**, making simple operations like delta addition surprisingly effective.
+Code for **[Efficient Modular Learning through Naive LoRA Summation: Leveraging Orthogonality in High-Dimensional Models](https://arxiv.org/abs/2508.11985)** (Cao, Truong, Lizarraga, 2025).
 
-The repository includes code for training LoRA adapters, analyzing their structure with PCA, and composing multiple LoRAs into a single model.
+We train LoRA adapters on separate domains and combine them by adding their weight deltas, with no further training. Adapters trained on unrelated data tend to sit in nearly orthogonal subspaces, so they interfere very little when added.
 
----
+## Results
 
-## Features
-- Train LoRA adapters on separate domains  
-- Extract and analyze LoRA deltas  
-- PCA visualization of delta subspaces  
-- Naive LoRA summation (A + B)  
-- Evaluate combined-domain performance  
+The base model is GPT-2 Small (117M), with LoRA rank 4 and alpha 64. We train on three QA domains: math, medicine, and finance.
 
----
+| Combination | Perplexity vs. training on merged data |
+|---|---|
+| Math + Medicine | **−9.10%** |
+| Math + Finance | +4.54% |
+| Finance + Medicine | +27.56% |
+
+The RMS cosine similarity between two adapters' deltas predicts how much they interfere. The relationship is close to linear: the more similar the deltas, the bigger the perplexity penalty.
+
+## Repository layout
+
+There is one folder per domain (`MATH`, `MEDICINE`, `FINANCE`) and one per combination (`MATH_MEDICINE`, `MATH_FINANCE`, `FINANCE_MEDICINE`, `MATH_FINANCE_MEDICINE`). Each folder uses the same script naming:
+
+| Script | Purpose |
+|---|---|
+| `param_*.py` | Optuna hyperparameter search for the LoRA config |
+| `*Script.py` | Fine-tunes a LoRA adapter on that domain's data (or on merged data, as the baseline) |
+| `create_*Weights.py` | Adds the per-domain LoRA deltas together |
+| `lora_*Script.py` | Loads GPT-2 with the summed deltas and evaluates perplexity |
+
+The best hyperparameters for each run are recorded in [`parameters.md`](parameters.md).
 
 ## Setup
 
-### 1. Clone the repository
 ```bash
 git clone https://github.com/LaziestCactus/sumLoRA.git
 cd sumLoRA
-```
-
-### 2. Install dependencies
-```bash
 pip install -r requirements.txt
 ```
 
----
-
-## Training
-
-Train a LoRA adapter on a dataset:
-
-```bash
-python training/train_lora.py --config training/config.yaml
-```
-
-This produces plots showing the principal directions and subspace overlaps.
-
----
-
 ## Citation
 
-If you use this project, please cite:
-
-```
-Cao, Z. (2025). Efficient Modular Learning through Naive LoRA Summation.
-arXiv:2508.11985.
+```bibtex
+@article{cao2025sumlora,
+  title   = {Efficient Modular Learning through Naive LoRA Summation: Leveraging Orthogonality in High-Dimensional Models},
+  author  = {Cao, Zhanhao and Truong, Clement and Lizarraga, Andrew},
+  journal = {arXiv preprint arXiv:2508.11985},
+  year    = {2025}
+}
 ```
